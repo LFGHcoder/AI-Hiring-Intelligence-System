@@ -3,7 +3,7 @@ import json
 
 SYSTEM = (
     "You are an expert hiring evaluator. You assess candidate interview answers "
-    "based on the job description and score them across multiple dimensions."
+    "based on the job description and score them across structured interview dimensions."
 )
 
 
@@ -15,23 +15,36 @@ def evaluate_answers(answers: list, job_description: str):
     Candidate Answers:
     {answers}
 
-    Evaluate strictly on:
-    - communication (clarity, articulation)
-    - leadership (ownership, initiative)
-    - problem solving (logic, approach)
-    - cultural fit (alignment with role/team)
+    Evaluate answers separately for:
 
-    Also identify:
+    1. Behavioral performance:
+       - leadership
+       - teamwork
+       - conflict handling
+
+    2. Cultural fit:
+       - alignment with company values
+       - collaboration
+       - adaptability
+
+    3. Technical competency:
+       - role-specific knowledge
+       - problem solving ability
+
+    Also evaluate:
+    - communication clarity
+
+    Identify:
     - strengths
     - weaknesses
     - risk flags (red flags or concerns)
 
     Return ONLY valid JSON:
     {{
-      "communication_score": int,
-      "leadership_score": int,
-      "problem_solving_score": int,
+      "behavioral_score": int,
       "cultural_fit_score": int,
+      "technical_score": int,
+      "communication_score": int,
       "strengths": [],
       "weaknesses": [],
       "risk_flags": [],
@@ -40,4 +53,11 @@ def evaluate_answers(answers: list, job_description: str):
     """
 
     response = call_llm(f"{SYSTEM}\n\n{prompt}")
-    return json.loads(response)
+
+    try:
+        return json.loads(response)
+    except Exception:
+        return {
+            "error": "Invalid JSON from LLM",
+            "raw_response": response
+        }

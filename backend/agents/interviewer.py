@@ -9,31 +9,28 @@ SYSTEM = (
 
 def generate_questions(resume: str, job_description: str):
     prompt = f"""
-    Resume:
-    {resume}
+Resume:
+{resume}
 
-    Job Description:
-    {job_description}
+Job Description:
+{job_description}
 
-    Generate 5 behavioral interview questions.
+Generate interview questions divided into 3 sections:
 
-    Each question must evaluate:
-    - leadership
-    - teamwork
-    - conflict resolution
-    - ownership
+1. Behavioral (leadership, teamwork, conflict)
+2. Cultural Fit (values, collaboration, adaptability)
+3. Technical (role-specific skills based on job description)
 
-    Avoid generic questions. Make them specific to the candidate.
+Each section should have 2 questions.
 
-    Return ONLY valid JSON as a list:
-    [
-      "question 1",
-      "question 2",
-      "question 3",
-      "question 4",
-      "question 5"
-    ]
-    """
+Make questions specific to the candidate and role.
 
+Return ONLY valid JSON:
+{{
+  "behavioral": ["q1", "q2"],
+  "cultural": ["q1", "q2"],
+  "technical": ["q1", "q2"]
+}}
+"""
     response = call_llm(f"{SYSTEM}\n\n{prompt}")
     return json.loads(response)
