@@ -7,6 +7,8 @@ const STORAGE_APPS = "resumelens_applications";
 const STORAGE_SCREENS = "resumelens_screenings";
 const STORAGE_MSG = "resumelens_outreach";
 
+const BASE_URL = "http://127.0.0.1:8000";
+
 const SCREEN_SECONDS = 30;
 
 function uid(prefix) {
@@ -538,6 +540,7 @@ function initApplicantUI(email) {
   resumeText.value = u.resumeText || "";
 
   document.getElementById("analyzeBtn").onclick = () => runAnalyzer();
+  document.getElementById("generateQuestionsBtn").onclick = () => generateInterviewQuestions();
   document.getElementById("saveResumeBtn").onclick = () => {
     const all = getUsers();
     const prev = all[email] || {};
@@ -573,7 +576,7 @@ function initApplicantUI(email) {
   renderReachout(email);
 }
 
-function runAnalyzer() {
+async function runAnalyzer() {
   const job = jobDesc.value.trim();
   const resume = resumeText.value.trim();
   if (!job || !resume) {
@@ -581,20 +584,79 @@ function runAnalyzer() {
     insightText.textContent = "Paste both resume and job description, or use Job listings to match against posted roles.";
     return;
   }
-  const { score, matched, missing } = fullAnalysis(resume, job);
-  scoreRing.style.setProperty("--score", String(score));
-  scoreValue.textContent = score + "%";
-  matchedList.textContent = matched.length ? matched.join(", ") : "(none)";
-  missingList.textContent = missing.length ? missing.join(", ") : "—";
-  insightBox.hidden = false;
-  insightText.textContent =
-    score >= 70
-      ? "Strong overlap with this posting."
-      : score >= 40
-        ? "Moderate match — consider adding missing keywords where truthful."
-        : "Low overlap — tailor your resume or find a closer role.";
+  try {
+    const res = await fetch(`${BASE_URL}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume, job_description: job }),
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(detail || `Request failed (${res.status})`);
+    }
+    const payload = await res.json();
+    let analysis;
+    if (typeof payload === "string") {
+      analysis = JSON.parse(payload);
+    } else if (payload && typeof payload.result === "string") {
+      analysis = JSON.parse(payload.result);
+    } else {
+      analysis = payload;
+    }
+    const skills = analysis.skills_score;
+    scoreRing.style.setProperty("--score", String(skills));
+    scoreValue.textContent = skills + "%";
+    matchedList.textContent = analysis.summary || "—";
+    missingList.textContent = "—";
+    insightBox.hidden = false;
+    insightText.textContent = "AI analysis complete";
+  } catch (err) {
+    insightBox.hidden = false;
+    insightText.textContent =
+      err instanceof Error ? err.message : "Could not analyze resume. Is the backend running?";
+  }
 }
 
+async function generateInterviewQuestions() {
+  const resume = resumeText.value.trim();
+  const job = jobDesc.value.trim();
+
+  if (!resume || !job) {
+    insightBox.hidden = false;
+    insightText.textContent = "Paste both resume and job description first.";
+    return;
+  }
+
+  try {
+    const res = await fetch(`${BASE_URL}/interview`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        resume: resume,
+        job_description: job
+      })
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || "Failed to fetch questions");
+    }
+
+    const data = await res.json();
+
+    alert(
+      "Behavioral:\n" + data.behavioral.join("\n") +
+      "\n\nCultural:\n" + data.cultural.join("\n") +
+      "\n\nTechnical:\n" + data.technical.join("\n")
+    );
+
+  } catch (err) {
+    insightBox.hidden = false;
+    insightText.textContent = "Error generating questions: " + err.message;
+  }
+}
 function renderApplicantJobs(email) {
   const el = document.getElementById("applicantJobList");
   const users = getUsers();
