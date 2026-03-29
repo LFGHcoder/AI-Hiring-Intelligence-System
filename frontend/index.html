@@ -23,7 +23,7 @@
         <h1>Hire faster. Apply smarter.</h1>
         <p class="hero-lead">
           <strong>Recruiters:</strong> list jobs, shortlist applicants by resume match, send a timed screening question, and pick the best few for interviews.
-          <strong>Applicants:</strong> use the resume analyzer, browse jobs matched to your profile, answer recruiter questions in 30 seconds, and message recruiters.
+          <strong>Applicants:</strong> use the resume analyzer, browse jobs matched to your profile, answer AI screening questions (5 minutes once you start), and message recruiters.
         </p>
         <ul class="hero-points">
           <li>Choose your role when you create an account</li>
@@ -120,7 +120,7 @@
         </div>
         <div class="panel">
           <h2>Your job listings</h2>
-          <p class="panel-desc">Select a job to see applicants and send screening questions.</p>
+          <p class="panel-desc">Select a job to see applicants. Screening questions are sent automatically by AI when someone applies.</p>
           <div id="recruiterJobList" class="card-list"></div>
         </div>
       </div>
@@ -128,7 +128,7 @@
       <div id="recTabPipeline" class="rec-panel hidden">
         <div class="panel">
           <h2>Shortlist &amp; timed Q&amp;A</h2>
-          <p class="panel-desc">Pick a job, review applicants who applied, send one screening question, then rate answers (1–5) to choose your top 2–3 for interviews.</p>
+          <p class="panel-desc">Pick a job, review applicants who applied. Each applicant receives an AI-generated screening question when they apply. Rate answers (1–5) to choose your top 2–3 for interviews.</p>
           <label class="field"><span>Select job</span>
             <select id="pipelineJobSelect"></select>
           </label>
@@ -158,10 +158,14 @@
         <main class="app-main">
           <div class="panel panel-upload">
             <h2>Your resume</h2>
-            <p class="panel-desc">We save this text to score you against job postings and when you apply.</p>
-            <label class="field"><span>Resume text</span>
-              <textarea id="resumeText" rows="10" placeholder="Paste your resume…"></textarea>
+            <p class="panel-desc">Upload a resume PDF; we extract its text and use it for scoring when you apply.</p>
+            <label class="field"><span>Upload resume PDF</span>
+              <input type="file" id="resumePdfInput" accept="application/pdf" />
             </label>
+            <p class="form-hint" id="resumePdfStatus">No file selected.</p>
+            <p class="panel-desc">Extracted text preview (used for matching):</p>
+            <pre id="resumePdfPreview" class="pdf-preview" aria-live="polite">No file loaded yet.</pre>
+            <textarea id="resumeText" rows="10" hidden></textarea>
             <label class="field"><span>Compare to job description (optional)</span>
               <textarea id="jobDesc" rows="6" placeholder="Paste a job description to analyze match…"></textarea>
             </label>
@@ -201,7 +205,7 @@
       <div id="appTabScreenings" class="app-tab-panel hidden">
         <div class="panel wide-panel">
           <h2>Recruiter screening questions</h2>
-          <p class="panel-desc">You have <strong>30 seconds</strong> to answer once you start. Be concise.</p>
+          <p class="panel-desc">You have <strong>5 minutes</strong> to answer once you start.</p>
           <div id="pendingScreeningsList" class="card-list"></div>
         </div>
       </div>
@@ -225,25 +229,26 @@
     </div>
   </section>
 
-  <!-- Modal: answer screening (30s timer) -->
+  <!-- Modal: answer screening (5 min timer) -->
   <div id="answerModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="answerModalTitle">
     <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-box">
       <h2 id="answerModalTitle">Screening question</h2>
-      <p class="timer" id="answerTimer">0:30</p>
+      <p class="timer" id="answerTimer">5:00</p>
       <p id="answerModalQuestion" class="modal-q"></p>
       <label class="field"><span>Your answer</span>
         <textarea id="answerModalText" rows="4" placeholder="Type your answer…"></textarea>
       </label>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>
-        <button type="button" class="btn btn-primary" id="startScreeningBtn">Start 30s timer</button>
+        <button type="button" class="btn btn-primary" id="startScreeningBtn">Start 5 min timer</button>
         <button type="button" class="btn btn-primary hidden" id="submitScreeningAnswerBtn" disabled>Submit answer</button>
       </div>
-      <p class="form-hint" id="answerModalHint">Click Start to begin. You have 30 seconds to submit your answer.</p>
+      <p class="form-hint" id="answerModalHint">Click Start to begin. You have 5 minutes to submit your answer.</p>
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
