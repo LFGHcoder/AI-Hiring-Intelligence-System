@@ -7,9 +7,73 @@ const STORAGE_APPS = "resumelens_applications";
 const STORAGE_SCREENS = "resumelens_screenings";
 const STORAGE_MSG = "resumelens_outreach";
 
-const BASE_URL = "http://127.0.0.1:8000";
+/** Base URL for your backend (no trailing slash). If empty, screening questions are generated locally. */
+const AI_SCREENING_API_URL = "";
 
-const SCREEN_SECONDS = 30;
+const SCREEN_SECONDS = 5 * 60;
+
+function formatCountdownSeconds(totalSec) {
+  const m = Math.floor(Math.max(0, totalSec) / 60);
+  const s = Math.max(0, totalSec) % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+function formatCountdownFromMs(ms) {
+  return formatCountdownSeconds(Math.ceil(Math.max(0, ms) / 1000));
+}
+
+function generateLocalScreeningQuestion(job, application) {
+  const title = (job && job.title) || "this role";
+  const desc = ((job && job.description) || "").trim().replace(/\s+/g, " ").slice(0, 240);
+  const hint = desc ? ` Context: ${desc}${desc.length >= 240 ? "…" : ""}` : "";
+  return `Briefly explain how your background fits ${title}.${hint} Give one concrete example from your experience.`;
+}
+
+async function fetchAiScreeningQuestion(job, application) {
+  const base = typeof AI_SCREENING_API_URL === "string" ? AI_SCREENING_API_URL.trim() : "";
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base.replace(/\/$/, "")}/screening-question`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jobId: job.id,
+        jobTitle: job.title,
+        jobDescription: job.description,
+        applicantEmail: application.applicantEmail,
+        resumeExcerpt: application.resumeSnapshot,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.question === "string" ? data.question : null;
+  } catch {
+    return null;
+  }
+}
+
+async function createAiScreeningForApplication(job, application, recruiterEmail) {
+  const list = getScreens();
+  if (list.some((s) => s.jobId === job.id && s.applicantEmail === application.applicantEmail)) {
+    return;
+  }
+  let question = await fetchAiScreeningQuestion(job, application);
+  if (!question || !String(question).trim()) {
+    question = generateLocalScreeningQuestion(job, application);
+  }
+  list.push({
+    id: uid("sc"),
+    jobId: job.id,
+    applicantEmail: application.applicantEmail,
+    recruiterEmail,
+    question: String(question).trim(),
+    answer: null,
+    answeredAt: null,
+    recruiterScore: null,
+    interviewPick: false,
+  });
+  saveScreens(list);
+}
 
 function uid(prefix) {
   return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -405,18 +469,14 @@ function renderPipelineDetail(recruiterEmail) {
   } else {
     applicantsBlock = `
       <table class="data-table">
-        <thead><tr><th>Applicant</th><th>Resume match</th><th>Screening question</th></tr></thead>
+        <thead><tr><th>Applicant</th><th>Resume match</th><th>AI screening</th></tr></thead>
         <tbody>
         ${apps
           .map((a) => {
-            const qid = `q-${a.id}`;
             return `<tr>
               <td>${esc(a.applicantEmail)}</td>
               <td>${a.matchScore}%</td>
-              <td>
-                <textarea class="screen-q-input" rows="2" id="${qid}" placeholder="Short question…"></textarea>
-                <button type="button" class="btn btn-primary btn-sm send-q" data-app="${esc(a.id)}">Send question</button>
-              </td>
+              <td><span class="empty-hint" style="display: inline">Question is sent automatically when they apply (${AI_SCREENING_API_URL ? "your AI backend" : "demo generator"}).</span></td>
             </tr>`;
           })
           .join("")}
@@ -477,35 +537,6 @@ function renderPipelineDetail(recruiterEmail) {
     <div class="screen-list">${screens.length ? screenRows : "<p>No questions sent yet.</p>"}</div>
   `;
 
-  wrap.querySelectorAll(".send-q").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const appId = btn.getAttribute("data-app");
-      const ta = document.getElementById("q-" + appId);
-      const question = ta && ta.value.trim();
-      if (!question) {
-        alert("Enter a question.");
-        return;
-      }
-      const application = getApps().find((x) => x.id === appId);
-      if (!application) return;
-      const list = getScreens();
-      list.push({
-        id: uid("sc"),
-        jobId,
-        applicantEmail: application.applicantEmail,
-        recruiterEmail,
-        question,
-        answer: null,
-        answeredAt: null,
-        recruiterScore: null,
-        interviewPick: false,
-      });
-      saveScreens(list);
-      ta.value = "";
-      renderPipelineDetail(recruiterEmail);
-    });
-  });
-
   wrap.querySelectorAll(".save-rate").forEach((btn) => {
     btn.addEventListener("click", () => {
       const sid = btn.getAttribute("data-screen");
@@ -526,6 +557,9 @@ function renderPipelineDetail(recruiterEmail) {
 
 // ---------- Applicant ----------
 const resumeText = document.getElementById("resumeText");
+const resumePdfInput = document.getElementById("resumePdfInput");
+const resumePdfStatus = document.getElementById("resumePdfStatus");
+const resumePdfPreview = document.getElementById("resumePdfPreview");
 const jobDesc = document.getElementById("jobDesc");
 const scoreRing = document.getElementById("scoreRing");
 const scoreValue = document.getElementById("scoreValue");
@@ -534,13 +568,39 @@ const missingList = document.getElementById("missingList");
 const insightBox = document.getElementById("insightBox");
 const insightText = document.getElementById("insightText");
 
+async function extractTextFromPdfFile(file) {
+  if (!file) throw new Error("No file provided.");
+  if (!window.pdfjsLib || !window.pdfjsLib.getDocument) {
+    throw new Error("pdf.js not loaded.");
+  }
+
+  // pdf.js needs the worker to parse PDFs.
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  let fullText = "";
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const strings = content.items.map((item) => item.str);
+    fullText += strings.join(" ") + "\n";
+  }
+  return fullText.trim();
+}
+
 function initApplicantUI(email) {
   const users = getUsers();
   const u = users[email] || {};
   resumeText.value = u.resumeText || "";
+  if (resumePdfPreview) {
+    const preview = resumeText.value ? resumeText.value.slice(0, 6000) : "No PDF extracted yet. Upload one to enable scoring.";
+    resumePdfPreview.textContent = preview + (resumeText.value && resumeText.value.length > 6000 ? "…" : "");
+  }
 
   document.getElementById("analyzeBtn").onclick = () => runAnalyzer();
-  document.getElementById("generateQuestionsBtn").onclick = () => generateInterviewQuestions();
   document.getElementById("saveResumeBtn").onclick = () => {
     const all = getUsers();
     const prev = all[email] || {};
@@ -571,92 +631,81 @@ function initApplicantUI(email) {
 
   document.getElementById("sendReachoutBtn").onclick = () => sendReachout(email);
 
+  if (resumePdfInput) {
+    resumePdfInput.onchange = async () => {
+      const file = resumePdfInput.files && resumePdfInput.files[0];
+      if (!file) return;
+
+      const analyzeBtn = document.getElementById("analyzeBtn");
+      const saveResumeBtn = document.getElementById("saveResumeBtn");
+      resumePdfInput.disabled = true;
+      if (analyzeBtn) analyzeBtn.disabled = true;
+      if (saveResumeBtn) saveResumeBtn.disabled = true;
+
+      try {
+        if (resumePdfStatus) resumePdfStatus.textContent = "Extracting text from PDF…";
+        if (resumePdfPreview) resumePdfPreview.textContent = "Extracting…";
+
+        const text = await extractTextFromPdfFile(file);
+        resumeText.value = text;
+        // Auto-save extracted PDF text so Apply works right away.
+        const all = getUsers();
+        const prev = all[email] || {};
+        all[email] = { ...prev, resumeText: text };
+        saveUsers(all);
+
+        if (resumePdfPreview) {
+          resumePdfPreview.textContent = text.slice(0, 6000) + (text.length > 6000 ? "…" : "");
+        }
+        if (resumePdfStatus) resumePdfStatus.textContent = "PDF extracted and saved to your profile.";
+        renderApplicantJobs(email);
+      } catch (e) {
+        if (resumePdfStatus) resumePdfStatus.textContent = "Could not read this PDF. Try another file.";
+        if (resumePdfPreview) resumePdfPreview.textContent = "Extraction failed.";
+        alert("Failed to extract text from the PDF. Please try another PDF.");
+      } finally {
+        resumePdfInput.disabled = false;
+        if (analyzeBtn) analyzeBtn.disabled = false;
+        if (saveResumeBtn) saveResumeBtn.disabled = false;
+      }
+    };
+  }
+
   renderApplicantJobs(email);
   renderPendingScreenings(email);
   renderReachout(email);
 }
 
-async function runAnalyzer() {
+function runAnalyzer() {
   const job = jobDesc.value.trim();
   const resume = resumeText.value.trim();
   if (!job || !resume) {
     insightBox.hidden = false;
-    insightText.textContent = "Paste both resume and job description, or use Job listings to match against posted roles.";
-    return;
-  }
-  try {
-    const res = await fetch(`${BASE_URL}/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ resume, job_description: job }),
-    });
-    if (!res.ok) {
-      const detail = await res.text();
-      throw new Error(detail || `Request failed (${res.status})`);
-    }
-    const payload = await res.json();
-    let analysis;
-    if (typeof payload === "string") {
-      analysis = JSON.parse(payload);
-    } else if (payload && typeof payload.result === "string") {
-      analysis = JSON.parse(payload.result);
+    if (!resume) {
+      insightText.textContent = "Upload your resume PDF to extract its text first.";
+      alert("Upload your resume PDF to extract its text first.");
+      if (resumePdfInput) resumePdfInput.focus();
     } else {
-      analysis = payload;
+      insightText.textContent = "Paste a job description to analyze match.";
+      alert("Paste a job description to analyze match.");
+      if (jobDesc) jobDesc.focus();
     }
-    const skills = analysis.skills_score;
-    scoreRing.style.setProperty("--score", String(skills));
-    scoreValue.textContent = skills + "%";
-    matchedList.textContent = analysis.summary || "—";
-    missingList.textContent = "—";
-    insightBox.hidden = false;
-    insightText.textContent = "AI analysis complete";
-  } catch (err) {
-    insightBox.hidden = false;
-    insightText.textContent =
-      err instanceof Error ? err.message : "Could not analyze resume. Is the backend running?";
-  }
-}
-
-async function generateInterviewQuestions() {
-  const resume = resumeText.value.trim();
-  const job = jobDesc.value.trim();
-
-  if (!resume || !job) {
-    insightBox.hidden = false;
-    insightText.textContent = "Paste both resume and job description first.";
     return;
   }
-
-  try {
-    const res = await fetch(`${BASE_URL}/interview`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        resume: resume,
-        job_description: job
-      })
-    });
-
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(txt || "Failed to fetch questions");
-    }
-
-    const data = await res.json();
-
-    alert(
-      "Behavioral:\n" + data.behavioral.join("\n") +
-      "\n\nCultural:\n" + data.cultural.join("\n") +
-      "\n\nTechnical:\n" + data.technical.join("\n")
-    );
-
-  } catch (err) {
-    insightBox.hidden = false;
-    insightText.textContent = "Error generating questions: " + err.message;
-  }
+  const { score, matched, missing } = fullAnalysis(resume, job);
+  scoreRing.style.setProperty("--score", String(score));
+  scoreValue.textContent = score + "%";
+  matchedList.textContent = matched.length ? matched.join(", ") : "(none)";
+  missingList.textContent = missing.length ? missing.join(", ") : "—";
+  insightBox.hidden = false;
+  insightText.textContent =
+    score >= 70
+      ? "Strong overlap with this posting."
+      : score >= 40
+        ? "Moderate match — consider adding missing keywords where truthful."
+        : "Low overlap — tailor your resume or find a closer role.";
 }
+
 function renderApplicantJobs(email) {
   const el = document.getElementById("applicantJobList");
   const users = getUsers();
@@ -689,7 +738,7 @@ function renderApplicantJobs(email) {
       const u = getUsers()[email];
       const text = (u && u.resumeText) || "";
       if (!text.trim()) {
-        alert("Save your resume on the Resume analyzer tab first.");
+        alert("Upload your resume PDF and save it to your profile first.");
         return;
       }
       const job = getJobs().find((x) => x.id === jobId);
@@ -697,16 +746,19 @@ function renderApplicantJobs(email) {
       const matchScore = computeMatchScore(text, job.description);
       const apps = getApps();
       if (apps.some((a) => a.jobId === jobId && a.applicantEmail === email)) return;
-      apps.push({
+      const newApp = {
         id: uid("a"),
         jobId,
         applicantEmail: email,
         resumeSnapshot: text.slice(0, 2000),
         matchScore,
         appliedAt: Date.now(),
-      });
+      };
+      apps.push(newApp);
       saveApps(apps);
-      renderApplicantJobs(email);
+      createAiScreeningForApplication(job, newApp, job.recruiterEmail).finally(() => {
+        renderApplicantJobs(email);
+      });
     });
   });
 }
@@ -715,7 +767,7 @@ function renderPendingScreenings(email) {
   const el = document.getElementById("pendingScreeningsList");
   const screens = getScreens().filter((s) => s.applicantEmail === email && !s.answer);
   if (!screens.length) {
-    el.innerHTML = '<p class="empty-hint">No open questions. When a recruiter sends one, it will appear here.</p>';
+    el.innerHTML = '<p class="empty-hint">No open questions. After you apply to a job, an AI-generated screening question appears here.</p>';
     return;
   }
   const jobs = getJobs();
@@ -726,7 +778,7 @@ function renderPendingScreenings(email) {
       <article class="job-card">
         <p><strong>${esc(job ? job.title : "Job")}</strong> · ${esc(s.recruiterEmail)}</p>
         <p>${esc(s.question)}</p>
-        <button type="button" class="btn btn-primary open-answer" data-screen="${esc(s.id)}">Answer (${SCREEN_SECONDS}s timer)</button>
+        <button type="button" class="btn btn-primary open-answer" data-screen="${esc(s.id)}">Answer (5 min timer)</button>
       </article>`;
     })
     .join("");
@@ -766,8 +818,8 @@ function openAnswerModal(screeningId) {
   startScreeningBtn.classList.remove("hidden");
   submitScreeningAnswerBtn.classList.add("hidden");
   submitScreeningAnswerBtn.disabled = true;
-  answerTimer.textContent = "0:" + String(SCREEN_SECONDS).padStart(2, "0");
-  answerModalHint.textContent = "Click Start to begin your " + SCREEN_SECONDS + "-second window.";
+  answerTimer.textContent = formatCountdownSeconds(SCREEN_SECONDS);
+  answerModalHint.textContent = "Click Start to begin your 5-minute window.";
   stopAnswerTimer();
   answerModal.classList.remove("hidden");
 }
@@ -793,8 +845,7 @@ startScreeningBtn.addEventListener("click", () => {
   stopAnswerTimer();
   timerInterval = setInterval(() => {
     const left = Math.max(0, deadline - Date.now());
-    const sec = Math.ceil(left / 1000);
-    answerTimer.textContent = "0:" + String(sec).padStart(2, "0");
+    answerTimer.textContent = formatCountdownFromMs(left);
     if (left <= 0) {
       stopAnswerTimer();
       submitScreeningAnswerBtn.disabled = true;
