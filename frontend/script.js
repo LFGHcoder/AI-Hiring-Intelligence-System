@@ -8,9 +8,9 @@ const STORAGE_SCREENS = "resumelens_screenings";
 const STORAGE_MSG = "resumelens_outreach";
 
 /** Base URL for your backend (no trailing slash). If empty, screening questions are generated locally. */
-const AI_SCREENING_API_URL = "http://127.0.0.1:8000";
+const AI_SCREENING_API_URL = "";
 
-const SCREEN_SECONDS = 5 * 60;
+const SCREEN_SECONDS = 60;
 
 function formatCountdownSeconds(totalSec) {
   const m = Math.floor(Math.max(0, totalSec) / 60);
@@ -22,57 +22,86 @@ function formatCountdownFromMs(ms) {
   return formatCountdownSeconds(Math.ceil(Math.max(0, ms) / 1000));
 }
 
-function generateLocalScreeningQuestion(job, application) {
+function generateLocalScreeningQuestions(job) {
   const title = (job && job.title) || "this role";
-  const desc = ((job && job.description) || "").trim().replace(/\s+/g, " ").slice(0, 240);
-  const hint = desc ? ` Context: ${desc}${desc.length >= 240 ? "…" : ""}` : "";
-  return `Briefly explain how your background fits ${title}.${hint} Give one concrete example from your experience.`;
+  const desc = ((job && job.description) || "").trim().replace(/\s+/g, " ").slice(0, 180);
+  const hint = desc ? ` Job context: ${desc}${desc.length >= 180 ? "…" : ""}` : "";
+  return [
+    `Behavioral: Tell us about a time you handled conflict in a team while working on ${title}.${hint}`,
+    `Theoretical: Explain how you would design a reliable solution for a key requirement in ${title}.`,
+    `Behavioral: Describe a time you managed multiple deadlines and how you prioritized your work.`,
+    `Theoretical: How would you debug a production performance issue step by step?`,
+    `Situational: If requirements are unclear in ${title}, how do you move forward without blocking delivery?`,
+  ];
 }
 
-async function fetchAiScreeningQuestion(job, application) {
+async function fetchAiScreeningQuestions(job, application, count) {
+  const base = typeof AI_SCREENING_API_URL === "string" ? AI_SCREENING_API_URL.trim() : "";
+  if (!base) return null;
   try {
-    const res = await fetch(`${API_BASE}/interview`, {
+    const res = await fetch(`${base.replace(/\/$/, "")}/screening-questions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        resume: application.resumeSnapshot,
-        job_description: job.description
-      })
+        jobId: job.id,
+        jobTitle: job.title,
+        jobDescription: job.description,
+        applicantEmail: application.applicantEmail,
+        resumeExcerpt: application.resumeSnapshot,
+        count,
+      }),
     });
-
+    if (!res.ok) return null;
     const data = await res.json();
-
-    // backend returns { questions: [...] }
-    return data.questions ? data.questions.join("\n") : null;
-
-  } catch (e) {
-    console.error(e);
+    if (!Array.isArray(data.questions)) return null;
+    const cleaned = data.questions
+      .map((q) => (typeof q === "string" ? q.trim() : ""))
+      .filter(Boolean);
+    return cleaned.length >= count ? cleaned.slice(0, count) : null;
+  } catch {
     return null;
   }
 }
-async function createAiScreeningForApplication(job, application, recruiterEmail) {
+
+async function sendAiQuestionsToApplicants(job, applications, recruiterEmail) {
   const list = getScreens();
-  if (list.some((s) => s.jobId === job.id && s.applicantEmail === application.applicantEmail)) {
+  if (!applications.length) {
     return;
   }
-  let question = await fetchAiScreeningQuestion(job, application);
-  if (!question || !String(question).trim()) {
-    question = generateLocalScreeningQuestion(job, application);
+  let createdCount = 0;
+  let skippedCount = 0;
+  for (const application of applications) {
+    if (list.some((s) => s.jobId === job.id && s.applicantEmail === application.applicantEmail)) {
+      skippedCount++;
+      continue;
+    }
+    const desiredCount = 5;
+    let questions = await fetchAiScreeningQuestions(job, application, desiredCount);
+    if (!questions) questions = generateLocalScreeningQuestions(job);
+    questions.slice(0, desiredCount).forEach((question, idx) => {
+      list.push({
+        id: uid("sc"),
+        jobId: job.id,
+        applicantEmail: application.applicantEmail,
+        recruiterEmail,
+        question: String(question).trim(),
+        questionNumber: idx + 1,
+        totalQuestions: desiredCount,
+        answer: null,
+        answeredAt: null,
+        recruiterScore: null,
+        interviewPick: false,
+      });
+      createdCount++;
+    });
   }
-  list.push({
-    id: uid("sc"),
-    jobId: job.id,
-    applicantEmail: application.applicantEmail,
-    recruiterEmail,
-    question: String(question).trim(),
-    answer: null,
-    answeredAt: null,
-    recruiterScore: null,
-    interviewPick: false,
-  });
   saveScreens(list);
+  if (createdCount) {
+    alert(`Sent ${createdCount} AI question(s).`);
+  }
+  if (skippedCount) {
+    alert(`${skippedCount} applicant(s) already had screening questions, so they were skipped.`);
+  }
 }
 
 function uid(prefix) {
@@ -469,14 +498,16 @@ function renderPipelineDetail(recruiterEmail) {
   } else {
     applicantsBlock = `
       <table class="data-table">
-        <thead><tr><th>Applicant</th><th>Resume match</th><th>AI screening</th></tr></thead>
+        <thead><tr><th>Select</th><th>Applicant</th><th>Resume match</th><th>AI screening</th></tr></thead>
         <tbody>
         ${apps
           .map((a) => {
+            const questionCount = screens.filter((s) => s.applicantEmail === a.applicantEmail).length;
             return `<tr>
+              <td><input type="checkbox" class="pick-screening-app" data-app="${esc(a.id)}" /></td>
               <td>${esc(a.applicantEmail)}</td>
               <td>${a.matchScore}%</td>
-              <td><span class="empty-hint" style="display: inline">Question is sent automatically when they apply (${AI_SCREENING_API_URL ? "your AI backend" : "demo generator"}).</span></td>
+              <td><span class="empty-hint" style="display: inline">${questionCount ? `${questionCount} question(s) already sent` : `Ready to send 5 questions (${AI_SCREENING_API_URL ? "AI backend" : "demo generator"})`}</span></td>
             </tr>`;
           })
           .join("")}
@@ -532,10 +563,33 @@ function renderPipelineDetail(recruiterEmail) {
     <p class="panel-desc job-desc-full">${esc(job.description)}</p>
     ${topBlock}
     <h3 class="h3-spaced">Applicants</h3>
+    <p class="panel-desc">Select applicants you like, then send 5 AI questions (behavioral + theoretical). Timer is 1 minute per question.</p>
     ${applicantsBlock}
+    ${apps.length ? '<button type="button" class="btn btn-primary" id="sendSelectedQuestionsBtn">Send 5 AI questions to selected applicants</button>' : ""}
     <h3 class="h3-spaced">Screening Q&amp;A</h3>
     <div class="screen-list">${screens.length ? screenRows : "<p>No questions sent yet.</p>"}</div>
   `;
+
+  const sendSelectedQuestionsBtn = wrap.querySelector("#sendSelectedQuestionsBtn");
+  if (sendSelectedQuestionsBtn) {
+    sendSelectedQuestionsBtn.addEventListener("click", async () => {
+      const ids = [...wrap.querySelectorAll(".pick-screening-app:checked")]
+        .map((node) => node.getAttribute("data-app"))
+        .filter(Boolean);
+      if (!ids.length) {
+        alert("Select at least one applicant first.");
+        return;
+      }
+      sendSelectedQuestionsBtn.disabled = true;
+      try {
+        const selectedApps = apps.filter((a) => ids.includes(a.id));
+        await sendAiQuestionsToApplicants(job, selectedApps, recruiterEmail);
+        renderPipelineDetail(recruiterEmail);
+      } finally {
+        sendSelectedQuestionsBtn.disabled = false;
+      }
+    });
+  }
 
   wrap.querySelectorAll(".save-rate").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -676,42 +730,36 @@ function initApplicantUI(email) {
   renderReachout(email);
 }
 
-async function runAnalyzer() {
+function runAnalyzer() {
   const job = jobDesc.value.trim();
   const resume = resumeText.value.trim();
-
   if (!job || !resume) {
-    alert("Upload resume + paste job description");
+    insightBox.hidden = false;
+    if (!resume) {
+      insightText.textContent = "Upload your resume PDF to extract its text first.";
+      alert("Upload your resume PDF to extract its text first.");
+      if (resumePdfInput) resumePdfInput.focus();
+    } else {
+      insightText.textContent = "Paste a job description to analyze match.";
+      alert("Paste a job description to analyze match.");
+      if (jobDesc) jobDesc.focus();
+    }
     return;
   }
-
-  try {
-    const res = await fetch(`${API_BASE}/analyze`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        resume: resume,
-        job_description: job
-      })
-    });
-
-    const data = await res.json();
-
-    // assuming backend returns { score, matched, missing }
-    const score = data.score || 0;
-
-    scoreRing.style.setProperty("--score", String(score));
-    scoreValue.textContent = score + "%";
-    matchedList.textContent = (data.matched || []).join(", ");
-    missingList.textContent = (data.missing || []).join(", ");
-
-  } catch (err) {
-    console.error(err);
-    alert("Backend not running");
-  }
+  const { score, matched, missing } = fullAnalysis(resume, job);
+  scoreRing.style.setProperty("--score", String(score));
+  scoreValue.textContent = score + "%";
+  matchedList.textContent = matched.length ? matched.join(", ") : "(none)";
+  missingList.textContent = missing.length ? missing.join(", ") : "—";
+  insightBox.hidden = false;
+  insightText.textContent =
+    score >= 70
+      ? "Strong overlap with this posting."
+      : score >= 40
+        ? "Moderate match — consider adding missing keywords where truthful."
+        : "Low overlap — tailor your resume or find a closer role.";
 }
+
 function renderApplicantJobs(email) {
   const el = document.getElementById("applicantJobList");
   const users = getUsers();
@@ -762,9 +810,7 @@ function renderApplicantJobs(email) {
       };
       apps.push(newApp);
       saveApps(apps);
-      createAiScreeningForApplication(job, newApp, job.recruiterEmail).finally(() => {
-        renderApplicantJobs(email);
-      });
+      renderApplicantJobs(email);
     });
   });
 }
@@ -773,7 +819,7 @@ function renderPendingScreenings(email) {
   const el = document.getElementById("pendingScreeningsList");
   const screens = getScreens().filter((s) => s.applicantEmail === email && !s.answer);
   if (!screens.length) {
-    el.innerHTML = '<p class="empty-hint">No open questions. After you apply to a job, an AI-generated screening question appears here.</p>';
+    el.innerHTML = '<p class="empty-hint">No open questions. Recruiters will assign screening question sets after reviewing your resume.</p>';
     return;
   }
   const jobs = getJobs();
@@ -783,8 +829,8 @@ function renderPendingScreenings(email) {
       return `
       <article class="job-card">
         <p><strong>${esc(job ? job.title : "Job")}</strong> · ${esc(s.recruiterEmail)}</p>
-        <p>${esc(s.question)}</p>
-        <button type="button" class="btn btn-primary open-answer" data-screen="${esc(s.id)}">Answer (5 min timer)</button>
+        <p><strong>Question ${esc(String(s.questionNumber || 1))}/${esc(String(s.totalQuestions || 5))}:</strong> ${esc(s.question)}</p>
+        <button type="button" class="btn btn-primary open-answer" data-screen="${esc(s.id)}">Answer (1 min timer)</button>
       </article>`;
     })
     .join("");
@@ -825,7 +871,7 @@ function openAnswerModal(screeningId) {
   submitScreeningAnswerBtn.classList.add("hidden");
   submitScreeningAnswerBtn.disabled = true;
   answerTimer.textContent = formatCountdownSeconds(SCREEN_SECONDS);
-  answerModalHint.textContent = "Click Start to begin your 5-minute window.";
+  answerModalHint.textContent = "Click Start to begin your 1-minute window.";
   stopAnswerTimer();
   answerModal.classList.remove("hidden");
 }
