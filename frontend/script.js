@@ -8,7 +8,7 @@ const STORAGE_SCREENS = "resumelens_screenings";
 const STORAGE_MSG = "resumelens_outreach";
 
 /** Base URL for your backend (no trailing slash). If empty, screening questions are generated locally. */
-const AI_SCREENING_API_URL = "";
+const AI_SCREENING_API_URL = "http://127.0.0.1:8000";
 
 const SCREEN_SECONDS = 5 * 60;
 
@@ -30,28 +30,28 @@ function generateLocalScreeningQuestion(job, application) {
 }
 
 async function fetchAiScreeningQuestion(job, application) {
-  const base = typeof AI_SCREENING_API_URL === "string" ? AI_SCREENING_API_URL.trim() : "";
-  if (!base) return null;
   try {
-    const res = await fetch(`${base.replace(/\/$/, "")}/screening-question`, {
+    const res = await fetch(`${API_BASE}/interview`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify({
-        jobId: job.id,
-        jobTitle: job.title,
-        jobDescription: job.description,
-        applicantEmail: application.applicantEmail,
-        resumeExcerpt: application.resumeSnapshot,
-      }),
+        resume: application.resumeSnapshot,
+        job_description: job.description
+      })
     });
-    if (!res.ok) return null;
+
     const data = await res.json();
-    return typeof data.question === "string" ? data.question : null;
-  } catch {
+
+    // backend returns { questions: [...] }
+    return data.questions ? data.questions.join("\n") : null;
+
+  } catch (e) {
+    console.error(e);
     return null;
   }
 }
-
 async function createAiScreeningForApplication(job, application, recruiterEmail) {
   const list = getScreens();
   if (list.some((s) => s.jobId === job.id && s.applicantEmail === application.applicantEmail)) {
@@ -676,36 +676,42 @@ function initApplicantUI(email) {
   renderReachout(email);
 }
 
-function runAnalyzer() {
+async function runAnalyzer() {
   const job = jobDesc.value.trim();
   const resume = resumeText.value.trim();
+
   if (!job || !resume) {
-    insightBox.hidden = false;
-    if (!resume) {
-      insightText.textContent = "Upload your resume PDF to extract its text first.";
-      alert("Upload your resume PDF to extract its text first.");
-      if (resumePdfInput) resumePdfInput.focus();
-    } else {
-      insightText.textContent = "Paste a job description to analyze match.";
-      alert("Paste a job description to analyze match.");
-      if (jobDesc) jobDesc.focus();
-    }
+    alert("Upload resume + paste job description");
     return;
   }
-  const { score, matched, missing } = fullAnalysis(resume, job);
-  scoreRing.style.setProperty("--score", String(score));
-  scoreValue.textContent = score + "%";
-  matchedList.textContent = matched.length ? matched.join(", ") : "(none)";
-  missingList.textContent = missing.length ? missing.join(", ") : "—";
-  insightBox.hidden = false;
-  insightText.textContent =
-    score >= 70
-      ? "Strong overlap with this posting."
-      : score >= 40
-        ? "Moderate match — consider adding missing keywords where truthful."
-        : "Low overlap — tailor your resume or find a closer role.";
-}
 
+  try {
+    const res = await fetch(`${API_BASE}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        resume: resume,
+        job_description: job
+      })
+    });
+
+    const data = await res.json();
+
+    // assuming backend returns { score, matched, missing }
+    const score = data.score || 0;
+
+    scoreRing.style.setProperty("--score", String(score));
+    scoreValue.textContent = score + "%";
+    matchedList.textContent = (data.matched || []).join(", ");
+    missingList.textContent = (data.missing || []).join(", ");
+
+  } catch (err) {
+    console.error(err);
+    alert("Backend not running");
+  }
+}
 function renderApplicantJobs(email) {
   const el = document.getElementById("applicantJobList");
   const users = getUsers();
