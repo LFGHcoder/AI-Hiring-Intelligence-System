@@ -1,36 +1,31 @@
 from utils.llm import call_llm
 import json
 
-SYSTEM = (
-    "You are an AI interviewer. Your job is to generate targeted behavioral "
-    "interview questions based on the candidate's resume and the job description."
-)
+SYSTEM = """
+Generate exactly 3 interview questions:
 
+1 behavioral question
+1 cultural fit question
+1 technical question
+
+Return ONLY JSON:
+{
+  "questions": [
+    "behavioral question",
+    "cultural question",
+    "technical question"
+  ]
+}
+"""
 
 def generate_questions(resume: str, job_description: str):
     prompt = f"""
-Resume:
-{resume}
+    Resume:
+    {resume}
 
-Job Description:
-{job_description}
+    Job Description:
+    {job_description}
+    """
 
-Generate interview questions divided into 3 sections:
-
-1. Behavioral (leadership, teamwork, conflict)
-2. Cultural Fit (values, collaboration, adaptability)
-3. Technical (role-specific skills based on job description)
-
-Each section should have 2 questions.
-
-Make questions specific to the candidate and role.
-
-Return ONLY valid JSON:
-{{
-  "behavioral": ["q1", "q2"],
-  "cultural": ["q1", "q2"],
-  "technical": ["q1", "q2"]
-}}
-"""
-    response = call_llm(f"{SYSTEM}\n\n{prompt}")
+    response = call_llm(SYSTEM + "\n\n" + prompt)
     return json.loads(response)
